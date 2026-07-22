@@ -1,0 +1,25 @@
+# Local configuration and data
+.env
+*.db
+*.db-shm
+*.db-wal
+/data/
+/config/local.json
+
+# Go
+/bin/
+*.test
+coverage.out
+
+# Frontend
+/web/node_modules/
+/web/dist/
+/web/coverage/
+/web/playwright-report/
+/web/test-results/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

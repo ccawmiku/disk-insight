@@ -1,0 +1,22 @@
+services:
+  disk-insight:
+    image: ghcr.io/ccawmiku/disk-insight:v1.0.0
+    container_name: disk-insight
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      DISK_INSIGHT_ROOTS: "/data::Data"
+    volumes:
+      - /path/to/your/data:/data:ro
+      - disk-insight-state:/var/lib/disk-insight
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  disk-insight-state:

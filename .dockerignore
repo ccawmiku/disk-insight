@@ -1,0 +1,13 @@
+.git
+.github
+.env
+data
+bin
+web/node_modules
+web/dist
+web/coverage
+web/playwright-report
+web/test-results
+*.db
+*.db-shm
+*.db-wal

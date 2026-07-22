@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  native-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24.15.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Verify and test Go code
+        run: |
+          go mod verify
+          go vet ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+          go test -race -coverprofile=coverage.out ./...
+          go build -trimpath -o disk-insight-ci ./cmd/disk-insight
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci --ignore-scripts
+
+      - name: Audit and test frontend
+        working-directory: web
+        run: |
+          npm audit --audit-level=high
+          npm run typecheck
+          npm run lint
+          npm run test:coverage
+          npm run build
+
+      - name: Install Chromium for end-to-end tests
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Start native application
+        env:
+          DISK_INSIGHT_ADDRESS: 127.0.0.1:18081
+          DISK_INSIGHT_DATABASE: ${{ runner.temp }}/disk-insight-e2e.db
+          DISK_INSIGHT_WEB: ${{ github.workspace }}/web/dist
+          DISK_INSIGHT_ROOTS: ${{ github.workspace }}/testdata/sample::Sample data
+        run: |
+          ./disk-insight-ci > "${RUNNER_TEMP}/disk-insight.log" 2>&1 &
+          echo $! > "${RUNNER_TEMP}/disk-insight.pid"
+          for attempt in {1..60}; do
+            if curl --fail --silent http://127.0.0.1:18081/api/v1/dashboard?rootId=1 \
+              | jq --exit-status '.summary.fileCount >= 10' >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "${RUNNER_TEMP}/disk-insight.log"
+          exit 1
+
+      - name: Run browser tests
+        working-directory: web
+        env:
+          DISK_INSIGHT_E2E_URL: http://127.0.0.1:18081
+        run: npm run test:e2e
+
+      - name: Show application log on failure
+        if: failure()
+        run: cat "${RUNNER_TEMP}/disk-insight.log" || true
+
+  container:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: native-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: docker/setup-buildx-action@v4.2.0
+
+      - name: Build test image for linux/amd64
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: disk-insight:test
+          build-args: VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test container
+        run: |
+          docker volume create disk-insight-ci-state
+          docker run --detach --name disk-insight-ci \
+            --read-only --tmpfs /tmp:size=32m \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --publish 18082:8080 \
+            --volume "${GITHUB_WORKSPACE}/testdata/sample:/data:ro" \
+            --volume disk-insight-ci-state:/var/lib/disk-insight \
+            disk-insight:test
+          trap 'docker logs disk-insight-ci; docker rm --force disk-insight-ci; docker volume rm disk-insight-ci-state' EXIT
+          for attempt in {1..60}; do
+            if curl --fail --silent http://127.0.0.1:18082/api/v1/dashboard?rootId=1 | jq --exit-status '.summary.fileCount >= 10' >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish versioned image
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          build-args: VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+
+      - name: Verify published manifest
+        run: docker buildx imagetools inspect "ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF_NAME}"
