@@ -11,8 +11,11 @@ test("renders the complete analytics dashboard", async ({ page }) => {
   await expect(page.locator(".waffle > span")).toHaveCount(200);
 });
 
-test("supports navigation and category filters", async ({ page }) => {
+test("supports navigation and category filters", async ({ page }, testInfo) => {
   await page.goto("/");
+  if (testInfo.project.name.startsWith("mobile")) {
+    await page.getByRole("button", { name: "打开菜单", exact: true }).click();
+  }
   const filesButton = page.getByRole("button", { name: "文件浏览", exact: true });
   await expect(filesButton).toBeVisible();
   await filesButton.click();

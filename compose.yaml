@@ -1,6 +1,6 @@
 services:
   disk-insight:
-    image: ghcr.io/ccawmiku/disk-insight:v1.0.1
+    image: ghcr.io/ccawmiku/disk-insight:v1.0.2
     container_name: disk-insight
     restart: unless-stopped
     ports:
