@@ -11,7 +11,7 @@ COPY go.mod go.sum ./
 RUN go mod download && go mod verify
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
-ARG VERSION=v1.0.0
+ARG VERSION=v1.0.1
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/disk-insight ./cmd/disk-insight
 
 FROM alpine:3.23.5
