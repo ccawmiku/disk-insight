@@ -72,3 +72,30 @@ func TestServerExposesScannedDashboardAndSettings(t *testing.T) {
 		t.Fatalf("static response = %d %q", response.Code, response.Body.String())
 	}
 }
+
+func TestServerReturnsNoScanBeforeInitialSnapshotCompletes(t *testing.T) {
+	rootPath := t.TempDir()
+	dataStore, err := store.Open(filepath.Join(t.TempDir(), "api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dataStore.Close() })
+	if err := dataStore.SyncRoots(context.Background(), []model.RootConfig{{Name: "Empty", Path: rootPath, Enabled: true}}); err != nil {
+		t.Fatal(err)
+	}
+
+	dashboards := analytics.NewDashboardService(dataStore)
+	manager := scanner.New(dataStore, dashboards.Invalidate)
+	handler := New(dataStore, manager, dashboards, t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard?rootId=1", nil)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("dashboard status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), analytics.ErrNoScan.Error()) {
+		t.Fatalf("dashboard body = %s", response.Body.String())
+	}
+}

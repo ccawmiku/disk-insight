@@ -66,7 +66,7 @@ func (s *DashboardService) Build(ctx context.Context, rootID int64, selectedPath
 	}
 	sort.Strings(categories)
 	var runID int64
-	if err := s.store.DB().QueryRowContext(ctx, "SELECT current_scan_id FROM roots WHERE id=? AND enabled=1", rootID).Scan(&runID); err != nil {
+	if err := s.store.DB().QueryRowContext(ctx, "SELECT current_scan_id FROM roots WHERE id=? AND enabled=1 AND current_scan_id IS NOT NULL", rootID).Scan(&runID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.Dashboard{}, ErrNoScan
 		}
