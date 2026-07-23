@@ -1,5 +1,5 @@
 import { LockKeyhole, UnlockKeyhole } from "lucide-react";
-import { useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { formatBytes, formatNumber } from "../lib/format";
 import type { TranslationKey } from "../lib/i18n";
 import type { Scale, SizePoint, Summary } from "../types";
@@ -11,7 +11,7 @@ interface ZoomRange {
   end: number;
 }
 
-export function SizeAnalytics({
+export const SizeAnalytics = memo(function SizeAnalytics({
   points,
   summary,
   scale,
@@ -51,28 +51,46 @@ export function SizeAnalytics({
     };
   }, [points, thresholdIndex, summary]);
 
-  const updateHover = (params: { dataIndex?: number }) => {
-    if (!locked && typeof params.dataIndex === "number")
-      setHovered(params.dataIndex);
-  };
-  const lockAt = (params: { dataIndex?: number }) => {
+  const updateHover = useCallback(
+    (params: { dataIndex?: number }) => {
+      if (!locked && typeof params.dataIndex === "number") {
+        setHovered(params.dataIndex);
+      }
+    },
+    [locked],
+  );
+  const lockAt = useCallback((params: { dataIndex?: number }) => {
     if (typeof params.dataIndex === "number") setHovered(params.dataIndex);
     setLocked(true);
-  };
-  const updateZoom = (params: {
-    start?: number;
-    end?: number;
-    batch?: Array<{ start: number; end: number }>;
-  }) => {
-    const next = params.batch?.[0] ?? params;
-    if (typeof next.start === "number" && typeof next.end === "number")
-      setZoom({ start: next.start, end: next.end });
-  };
-  const commonEvents = {
-    mouseover: updateHover,
-    click: lockAt,
-    datazoom: updateZoom,
-  };
+  }, []);
+  const updateZoom = useCallback(
+    (params: {
+      start?: number;
+      end?: number;
+      batch?: Array<{ start: number; end: number }>;
+    }) => {
+      const next = params.batch?.[0] ?? params;
+      if (typeof next.start === "number" && typeof next.end === "number")
+        setZoom({ start: next.start, end: next.end });
+    },
+    [],
+  );
+  const commonEvents = useMemo(
+    () => ({
+      mouseover: updateHover,
+      click: lockAt,
+      datazoom: updateZoom,
+    }),
+    [lockAt, updateHover, updateZoom],
+  );
+  const distribution = useMemo(
+    () => distributionOption(points, thresholdIndex, zoom, t),
+    [points, thresholdIndex, zoom, t],
+  );
+  const cumulative = useMemo(
+    () => cumulativeOption(points, thresholdIndex, zoom, t),
+    [points, thresholdIndex, zoom, t],
+  );
 
   return (
     <div className="size-analytics">
@@ -138,7 +156,7 @@ export function SizeAnalytics({
           }
         />
         <ReactECharts
-          option={distributionOption(points, thresholdIndex, zoom, t)}
+          option={distribution}
           onEvents={commonEvents}
           notMerge
           className="chart-large"
@@ -147,7 +165,7 @@ export function SizeAnalytics({
       <Card>
         <CardHeader title={t("cumulative")} description={t("cumulativeHint")} />
         <ReactECharts
-          option={cumulativeOption(points, thresholdIndex, zoom, t)}
+          option={cumulative}
           onEvents={commonEvents}
           notMerge
           className="chart-large"
@@ -155,7 +173,7 @@ export function SizeAnalytics({
       </Card>
     </div>
   );
-}
+});
 
 function SplitStat({
   label,

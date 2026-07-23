@@ -1,4 +1,9 @@
-import { BarChart, LineChart, TreemapChart } from "echarts/charts";
+import {
+  BarChart,
+  HeatmapChart,
+  LineChart,
+  TreemapChart,
+} from "echarts/charts";
 import {
   DataZoomComponent,
   GridComponent,
@@ -6,6 +11,7 @@ import {
   MarkAreaComponent,
   MarkLineComponent,
   TooltipComponent,
+  VisualMapComponent,
 } from "echarts/components";
 import { type EChartsType, init, use } from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
@@ -15,12 +21,14 @@ use([
   BarChart,
   LineChart,
   TreemapChart,
+  HeatmapChart,
   DataZoomComponent,
   GridComponent,
   LegendComponent,
   MarkAreaComponent,
   MarkLineComponent,
   TooltipComponent,
+  VisualMapComponent,
   CanvasRenderer,
 ]);
 

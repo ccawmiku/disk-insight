@@ -52,13 +52,20 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
 	}
-	dsn := "file:" + filepath.ToSlash(path) + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)"
+	dsn := "file:" + filepath.ToSlash(path) +
+		"?_pragma=busy_timeout(5000)" +
+		"&_pragma=foreign_keys(1)" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=cache_size(-16384)" +
+		"&_pragma=temp_store(FILE)" +
+		"&_pragma=mmap_size(0)" +
+		"&_pragma=journal_size_limit(67108864)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(4)
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(2)
 	store := &Store{db: db}
 	if err := store.migrate(context.Background()); err != nil {
 		db.Close()
@@ -300,6 +307,40 @@ func (s *Store) InsertScanErrors(ctx context.Context, runID int64, items map[str
 	return tx.Commit()
 }
 
+// AllocatedSizeForRun calculates physical usage without retaining one
+// filesystem identity per file in the Go heap. Empty identities are counted
+// individually; matching identities (hard links) are counted once.
+func (s *Store) AllocatedSizeForRun(ctx context.Context, rootID, runID int64) (*int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT allocated_size FROM entries
+WHERE root_id=? AND run_id=? AND kind='file' AND allocated_size IS NOT NULL AND identity=''
+UNION ALL
+SELECT MAX(allocated_size) FROM entries
+WHERE root_id=? AND run_id=? AND kind='file' AND allocated_size IS NOT NULL AND identity<>''
+GROUP BY identity`, rootID, runID, rootID, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var total int64
+	var found bool
+	for rows.Next() {
+		var value int64
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		total += value
+		found = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+	return &total, nil
+}
+
 func (s *Store) FinishRun(ctx context.Context, rootID, runID int64, summary RunSummary) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -393,7 +434,7 @@ WHERE r.id=? ORDER BY se.id LIMIT 1000`, rootID)
 		return nil, err
 	}
 	defer rows.Close()
-	var result []model.ScanError
+	result := make([]model.ScanError, 0)
 	for rows.Next() {
 		var item model.ScanError
 		if err := rows.Scan(&item.Path, &item.Message); err != nil {

@@ -30,3 +30,36 @@ test("keeps the mobile layout inside the viewport", async ({ page }, testInfo) =
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(1);
 });
+
+test("keeps scan management usable when no warnings exist", async ({ page }) => {
+  await page.goto("/?root=1&page=scans");
+  await expect(page.getByText("扫描进度", { exact: true })).toBeVisible();
+  await expect(page.getByText("扫描警告", { exact: true })).toBeVisible();
+  await expect(page.locator(".fatal-error")).toHaveCount(0);
+});
+
+test("preserves unsaved multiline settings during background polling", async ({
+  page,
+}) => {
+  await page.goto("/?root=1&page=settings");
+  await page.getByRole("button", { name: "海洋流光" }).click();
+  const exclusions = page.locator("textarea");
+  await exclusions.fill("node_modules\n.cache\n\narchive-*");
+  await page.waitForTimeout(3_500);
+  await expect(exclusions).toHaveValue("node_modules\n.cache\n\narchive-*");
+  await expect(page.getByText("有未保存修改")).toBeVisible();
+  await expect(page.getByRole("button", { name: "海洋流光" })).toHaveClass(
+    /selected/,
+  );
+});
+
+test("renders an equal-interval modification heatmap", async ({ page }) => {
+  await page.goto("/?root=1&page=time");
+  await expect(page.getByText("距今修改时间", { exact: true })).toBeVisible();
+  await expect
+    .poll(() => page.locator(".heatmap-card canvas").count())
+    .toBeGreaterThanOrEqual(1);
+  await expect(
+    page.getByText("60 个等间隔时间桶，颜色越深表示文件越集中"),
+  ).toBeVisible();
+});

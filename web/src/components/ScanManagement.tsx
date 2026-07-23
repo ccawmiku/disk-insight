@@ -38,7 +38,7 @@ export function ScanManagement({
     void selectedStage;
     api
       .errors(selectedRootId)
-      .then(setErrors)
+      .then((items) => setErrors(items ?? []))
       .catch(() => setErrors([]));
   }, [selectedRootId, selectedStage]);
   return (
@@ -115,7 +115,12 @@ function ProgressCard({
   );
   const percent =
     progress.stage === "completed" ? 100 : progress.estimatedPercent;
-  const elapsed = (Date.now() - new Date(progress.startedAt).getTime()) / 1000;
+  const elapsed =
+    ((progress.finishedAt
+      ? new Date(progress.finishedAt).getTime()
+      : Date.now()) -
+      new Date(progress.startedAt).getTime()) /
+    1000;
   const stageLabel = t(progress.stage);
   return (
     <Card className="progress-card">
@@ -151,6 +156,21 @@ function ProgressCard({
         </strong>
         <span>{progress.currentPath || stageLabel}</span>
       </div>
+      {active && percent === undefined && (
+        <div className="scan-notice">
+          <Gauge size={16} />
+          <span>{t("firstScanEstimate")}</span>
+        </div>
+      )}
+      {progress.error && (
+        <div className="scan-error-banner" role="alert">
+          <AlertTriangle size={17} />
+          <span>
+            <strong>{t("scanRootIssue")}</strong>
+            <small>{progress.error}</small>
+          </span>
+        </div>
+      )}
       <div className="progress-metrics">
         <Metric
           icon={FileSearch}

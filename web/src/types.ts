@@ -83,6 +83,7 @@ export interface SizePoint {
 export interface AgePoint {
   upperSeconds: number;
   count: number;
+  bytes: number;
 }
 
 export interface CategoryStat {

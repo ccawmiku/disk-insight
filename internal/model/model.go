@@ -80,6 +80,7 @@ type SizePoint struct {
 type AgePoint struct {
 	UpperSeconds int64 `json:"upperSeconds"`
 	Count        int64 `json:"count"`
+	Bytes        int64 `json:"bytes"`
 }
 
 type CategoryStat struct {

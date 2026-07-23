@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ccawmiku/disk-insight/internal/analytics"
 	"github.com/ccawmiku/disk-insight/internal/model"
@@ -84,6 +85,28 @@ func TestFailedReplacementKeepsLastCompleteSnapshot(t *testing.T) {
 	dashboard, err := analytics.NewDashboardService(dataStore).Build(context.Background(), roots[0].ID, "", nil, "linear", "linear")
 	if err != nil || dashboard.Summary.FileCount != 1 {
 		t.Fatalf("last snapshot was not preserved: count=%d err=%v", dashboard.Summary.FileCount, err)
+	}
+}
+
+func TestFirstScanProgressRemainsIndeterminate(t *testing.T) {
+	manager := New(nil, nil)
+	progress := model.ScanProgress{
+		RootID:    1,
+		RootName:  "Test",
+		Stage:     model.ScanScanning,
+		Files:     50,
+		StartedAt: time.Now().Add(-time.Second),
+	}
+	manager.setProgress(progress, 0)
+	got := manager.Progress()[0]
+	if got.EstimatedPercent != nil || got.EstimatedSeconds != nil {
+		t.Fatalf("first scan should be indeterminate: %#v", got)
+	}
+
+	manager.setProgress(progress, 100)
+	got = manager.Progress()[0]
+	if got.EstimatedPercent == nil || *got.EstimatedPercent < 49 || *got.EstimatedPercent > 51 {
+		t.Fatalf("replacement scan estimate = %#v", got.EstimatedPercent)
 	}
 }
 

@@ -58,7 +58,10 @@ export function Topbar({
           ["scanning", "indexing", "finalizing"].includes(progress.stage) && (
             <span className="scan-live">
               <i />
-              {t("scanning")} · {Math.round(progress.estimatedPercent ?? 0)}%
+              {t("scanning")}
+              {progress.estimatedPercent === undefined
+                ? ` · ${new Intl.NumberFormat().format(progress.files)} ${t("files")}`
+                : ` · ${Math.round(progress.estimatedPercent)}%`}
             </span>
           )}
         <Button variant="ghost" aria-label={t("refresh")} onClick={onRefresh}>

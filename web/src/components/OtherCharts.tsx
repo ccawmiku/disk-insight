@@ -1,89 +1,119 @@
+import { memo, useMemo } from "react";
 import { categoryColors } from "../lib/categories";
 import { formatAge, formatBytes, formatNumber } from "../lib/format";
 import type { TranslationKey } from "../lib/i18n";
-import type { AgePoint, ChildUsage, HistoryPoint, Scale } from "../types";
+import type { AgePoint, ChildUsage, HistoryPoint } from "../types";
 import ReactECharts from "./EChart";
-import { Card, CardHeader, Segmented } from "./ui";
+import { Card, CardHeader } from "./ui";
 
-export function AgeChart({
+export const AgeChart = memo(function AgeChart({
   data,
-  scale,
-  onScaleChange,
   t,
 }: {
   data: AgePoint[];
-  scale: Scale;
-  onScaleChange: (scale: Scale) => void;
   t: (key: TranslationKey | string) => string;
 }) {
-  const option = {
-    animationDuration: 280,
-    grid: { left: 58, right: 20, top: 26, bottom: 55 },
-    tooltip: {
-      trigger: "axis",
-      formatter: (params: Array<{ name: string; value: number }>) =>
-        `${params[0]?.name}<br/><strong>${formatNumber(params[0]?.value ?? 0)}</strong> ${t("files")}`,
-    },
-    xAxis: {
-      type: "category",
-      boundaryGap: false,
-      data: data.map((point) => formatAge(point.upperSeconds)),
-      axisLabel: { color: "#687083", hideOverlap: true },
-      axisLine: { lineStyle: { color: "#dce2ea" } },
-    },
-    yAxis: {
-      type: "value",
-      axisLabel: { color: "#687083" },
-      splitLine: { lineStyle: { color: "#edf0f5" } },
-    },
-    dataZoom: [{ type: "inside" }],
-    series: [
-      {
-        type: "line",
-        smooth: 0.45,
-        smoothMonotone: "x",
-        showSymbol: false,
-        data: data.map((point) => point.count),
-        lineStyle: { color: "#ff8a00", width: 3 },
-        areaStyle: {
-          color: {
-            type: "linear",
-            x: 0,
-            y: 0,
-            x2: 0,
-            y2: 1,
-            colorStops: [
-              { offset: 0, color: "rgba(255,138,0,.45)" },
-              { offset: 0.55, color: "rgba(255,193,69,.16)" },
-              { offset: 1, color: "rgba(255,255,255,0)" },
-            ],
-          },
+  const option = useMemo(() => {
+    const columns = 12;
+    const rows = 5;
+    const maximum = Math.max(1, ...data.map((point) => point.count));
+    const cells = data.map((point, index) => {
+      const lower = index === 0 ? 0 : data[index - 1].upperSeconds;
+      return [
+        index % columns,
+        Math.floor(index / columns),
+        point.count,
+        point.bytes,
+        lower,
+        point.upperSeconds,
+      ];
+    });
+    const rowLabels = Array.from({ length: rows }, (_, row) => {
+      const start = row * columns;
+      const end = Math.min((row + 1) * columns - 1, data.length - 1);
+      if (!data[end]) return "";
+      const lower = start === 0 ? 0 : data[start - 1].upperSeconds;
+      return `${formatAge(lower)}–${formatAge(data[end].upperSeconds)}`;
+    });
+    return {
+      animationDuration: 260,
+      grid: { left: 96, right: 24, top: 28, bottom: 62 },
+      tooltip: {
+        formatter: (params: {
+          value: [number, number, number, number, number, number];
+        }) => {
+          const value = params.value;
+          return [
+            `<strong>${formatAge(value[4])} – ${formatAge(value[5])}</strong>`,
+            `${formatNumber(value[2])} ${t("files")}`,
+            formatBytes(value[3]),
+          ].join("<br/>");
         },
       },
-    ],
-  };
+      xAxis: {
+        type: "category",
+        data: Array.from({ length: columns }, (_, index) => index + 1),
+        axisLabel: { color: "#7b8192", fontSize: 9, interval: 0 },
+        axisTick: { show: false },
+        axisLine: { show: false },
+        splitArea: { show: false },
+      },
+      yAxis: {
+        type: "category",
+        inverse: true,
+        data: rowLabels,
+        axisLabel: { color: "#687083", fontSize: 10 },
+        axisTick: { show: false },
+        axisLine: { show: false },
+      },
+      visualMap: {
+        min: 0,
+        max: maximum,
+        calculable: false,
+        orient: "horizontal",
+        left: "center",
+        bottom: 4,
+        itemWidth: 8,
+        itemHeight: 120,
+        dimension: 2,
+        text: [t("dense"), t("quiet")],
+        textStyle: { color: "#7b8192", fontSize: 10 },
+        inRange: {
+          color: ["#fff2ec", "#ffd2b8", "#ff9f68", "#ff5a5f", "#b72b6f"],
+        },
+      },
+      series: [
+        {
+          type: "heatmap",
+          data: cells,
+          itemStyle: {
+            borderColor: "rgba(255,255,255,.95)",
+            borderWidth: 4,
+            borderRadius: 7,
+          },
+          emphasis: {
+            itemStyle: {
+              borderColor: "#fff",
+              shadowBlur: 14,
+              shadowColor: "rgba(255,90,95,.28)",
+            },
+          },
+        },
+      ],
+    };
+  }, [data, t]);
   return (
-    <Card>
+    <Card className="heatmap-card">
       <CardHeader
         title={t("modifiedAge")}
-        action={
-          <Segmented
-            value={scale}
-            onChange={onScaleChange}
-            label="Age scale"
-            options={[
-              { value: "linear", label: t("linear") },
-              { value: "log", label: t("logarithmic") },
-            ]}
-          />
-        }
+        description={t("modifiedHeatmapHint")}
       />
       <ReactECharts option={option} className="chart-medium" />
     </Card>
   );
-}
+});
 
-export function DirectoryCharts({
+export const DirectoryCharts = memo(function DirectoryCharts({
   data,
   onNavigate,
   t,
@@ -195,9 +225,9 @@ export function DirectoryCharts({
       </Card>
     </div>
   );
-}
+});
 
-export function HistoryChart({
+export const HistoryChart = memo(function HistoryChart({
   data,
   t,
 }: {
@@ -208,7 +238,7 @@ export function HistoryChart({
     animationDuration: 280,
     grid: { left: 68, right: 68, top: 38, bottom: 48 },
     tooltip: { trigger: "axis" },
-    legend: { data: [t("logicalSize"), t("fileCount")] },
+    legend: { data: [t("logicalSize"), t("fileCount")], top: 2 },
     xAxis: {
       type: "category",
       data: data.map((item) => new Date(item.completedAt).toLocaleDateString()),
@@ -228,6 +258,8 @@ export function HistoryChart({
         axisLabel: {
           formatter: (value: number) => formatNumber(value),
           color: "#687083",
+          inside: true,
+          padding: [0, 4, 0, 0],
         },
         splitLine: { show: false },
       },
@@ -262,4 +294,4 @@ export function HistoryChart({
       <ReactECharts option={option} className="chart-large" />
     </Card>
   );
-}
+});

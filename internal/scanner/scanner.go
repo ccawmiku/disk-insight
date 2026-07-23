@@ -27,7 +27,8 @@ type Manager struct {
 }
 
 type directoryRecord struct {
-	entry store.Entry
+	entry     store.Entry
+	aggregate aggregate
 }
 
 type aggregate struct {
@@ -90,7 +91,15 @@ func (m *Manager) run(ctx context.Context, root model.RootConfig, exclusions []s
 	}
 	started := time.Now()
 	progress := model.ScanProgress{RootID: root.ID, RootName: root.Name, RunID: runID, Stage: model.ScanScanning, StartedAt: started.UTC()}
-	m.setProgress(progress, previousCount)
+	lastProgressUpdate := time.Time{}
+	publishProgress := func(force bool) {
+		if !force && time.Since(lastProgressUpdate) < 350*time.Millisecond {
+			return
+		}
+		m.setProgress(progress, previousCount)
+		lastProgressUpdate = time.Now()
+	}
+	publishProgress(true)
 	completed := false
 	defer func() {
 		if completed {
@@ -109,24 +118,26 @@ func (m *Manager) run(ctx context.Context, root model.RootConfig, exclusions []s
 		progress.Stage = status
 		progress.Error = message
 		progress.FinishedAt = &finished
-		m.setProgress(progress, previousCount)
+		publishProgress(true)
 	}()
 
 	rootInfo, err := osStat(root.Path)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("scan root %q is not mounted or does not exist: %w", root.Path, err)
+		}
+		if errors.Is(err, fs.ErrPermission) {
+			return fmt.Errorf("scan root %q is not readable by the container user: %w", root.Path, err)
+		}
 		return fmt.Errorf("open scan root: %w", err)
 	}
 	if !rootInfo.IsDir() {
 		return fmt.Errorf("scan root is not a directory")
 	}
 
-	directories := make(map[string]directoryRecord, 1024)
-	aggregates := make(map[string]*aggregate, 1024)
+	directories := make(map[string]*directoryRecord, 1024)
 	files := make([]store.Entry, 0, 512)
 	scanErrors := make(map[string]string)
-	identities := make(map[string]struct{})
-	var allocatedTotal int64
-	var hasAllocated bool
 	var largestName string
 	var largestSize int64
 
@@ -156,7 +167,7 @@ func (m *Manager) run(ctx context.Context, root model.RootConfig, exclusions []s
 			if len(scanErrors) < 1000 {
 				scanErrors[relative] = walkErr.Error()
 			}
-			m.setProgress(progress, previousCount)
+			publishProgress(false)
 			if item != nil && item.IsDir() {
 				return fs.SkipDir
 			}
@@ -174,7 +185,7 @@ func (m *Manager) run(ctx context.Context, root model.RootConfig, exclusions []s
 			if len(scanErrors) < 1000 {
 				scanErrors[relative] = infoErr.Error()
 			}
-			m.setProgress(progress, previousCount)
+			publishProgress(false)
 			if item.IsDir() {
 				return fs.SkipDir
 			}
@@ -188,27 +199,19 @@ func (m *Manager) run(ctx context.Context, root model.RootConfig, exclusions []s
 		}
 		parent := parentPath(relative)
 		if item.IsDir() {
-			directories[relative] = directoryRecord{entry: store.Entry{Path: relative, ParentPath: parent, Name: displayName(relative, root.Name), Kind: "directory", ModifiedAt: info.ModTime()}}
+			record := ensureDirectory(directories, relative)
+			record.entry = store.Entry{Path: relative, ParentPath: parent, Name: displayName(relative, root.Name), Kind: "directory", ModifiedAt: info.ModTime()}
 			if relative != "" {
 				progress.Directories++
-				addDirectoryToAncestors(aggregates, parent)
+				addDirectoryToAncestors(directories, parent)
 			}
-			m.setProgress(progress, previousCount)
+			publishProgress(false)
 			return nil
 		}
 		if !info.Mode().IsRegular() {
 			return nil
 		}
 		allocated, identity := platformMetadata(path, info)
-		if allocated != nil {
-			hasAllocated = true
-			if identity == "" {
-				allocatedTotal += *allocated
-			} else if _, seen := identities[identity]; !seen {
-				identities[identity] = struct{}{}
-				allocatedTotal += *allocated
-			}
-		}
 		files = append(files, store.Entry{Path: relative, ParentPath: parent, Name: item.Name(), Kind: "file", Category: classify.Category(item.Name()), Size: info.Size(), AllocatedSize: allocated, ModifiedAt: info.ModTime(), Identity: identity, RecursiveFiles: 1, RecursiveSize: info.Size()})
 		progress.Files++
 		progress.LogicalBytes += info.Size()
@@ -216,14 +219,15 @@ func (m *Manager) run(ctx context.Context, root model.RootConfig, exclusions []s
 			largestSize = info.Size()
 			largestName = relative
 		}
-		addFileToAncestors(aggregates, parent, info.Size())
+		addFileToAncestors(directories, parent, info.Size())
 		if len(files) >= 512 {
 			if err := flushFiles(); err != nil {
 				return err
 			}
 			time.Sleep(2 * time.Millisecond)
+			publishProgress(true)
 		}
-		m.setProgress(progress, previousCount)
+		publishProgress(false)
 		return nil
 	})
 	if err != nil {
@@ -237,15 +241,12 @@ func (m *Manager) run(ctx context.Context, root model.RootConfig, exclusions []s
 	}
 
 	progress.Stage = model.ScanIndexing
-	m.setProgress(progress, previousCount)
+	publishProgress(true)
 	directoryEntries := make([]store.Entry, 0, len(directories))
-	for path, record := range directories {
-		agg := aggregates[path]
-		if agg != nil {
-			record.entry.RecursiveFiles = agg.files
-			record.entry.RecursiveDirs = agg.dirs
-			record.entry.RecursiveSize = agg.size
-		}
+	for _, record := range directories {
+		record.entry.RecursiveFiles = record.aggregate.files
+		record.entry.RecursiveDirs = record.aggregate.dirs
+		record.entry.RecursiveSize = record.aggregate.size
 		directoryEntries = append(directoryEntries, record.entry)
 		if len(directoryEntries) >= 512 {
 			if err := m.store.InsertEntries(ctx, root.ID, runID, directoryEntries); err != nil {
@@ -259,10 +260,10 @@ func (m *Manager) run(ctx context.Context, root model.RootConfig, exclusions []s
 	}
 
 	progress.Stage = model.ScanFinalizing
-	m.setProgress(progress, previousCount)
-	var allocatedSummary *int64
-	if hasAllocated {
-		allocatedSummary = &allocatedTotal
+	publishProgress(true)
+	allocatedSummary, err := m.store.AllocatedSizeForRun(ctx, root.ID, runID)
+	if err != nil {
+		return err
 	}
 	if err := m.store.FinishRun(ctx, root.ID, runID, store.RunSummary{Files: progress.Files, Directories: progress.Directories, LogicalSize: progress.LogicalBytes, AllocatedSize: allocatedSummary, Errors: progress.Errors, LargestName: largestName, LargestSize: largestSize}); err != nil {
 		return err
@@ -275,7 +276,7 @@ func (m *Manager) run(ctx context.Context, root model.RootConfig, exclusions []s
 	percent := 100.0
 	progress.EstimatedPercent = &percent
 	progress.EstimatedSeconds = int64Pointer(0)
-	m.setProgress(progress, previousCount)
+	publishProgress(true)
 	if m.onComplete != nil {
 		m.onComplete(root.ID)
 	}
@@ -322,11 +323,11 @@ func excluded(name, relative string, patterns []string) bool {
 	return false
 }
 
-func addFileToAncestors(values map[string]*aggregate, parent string, size int64) {
+func addFileToAncestors(values map[string]*directoryRecord, parent string, size int64) {
 	for {
-		agg := ensureAggregate(values, parent)
-		agg.files++
-		agg.size += size
+		record := ensureDirectory(values, parent)
+		record.aggregate.files++
+		record.aggregate.size += size
 		if parent == "" {
 			return
 		}
@@ -334,9 +335,9 @@ func addFileToAncestors(values map[string]*aggregate, parent string, size int64)
 	}
 }
 
-func addDirectoryToAncestors(values map[string]*aggregate, parent string) {
+func addDirectoryToAncestors(values map[string]*directoryRecord, parent string) {
 	for {
-		ensureAggregate(values, parent).dirs++
+		ensureDirectory(values, parent).aggregate.dirs++
 		if parent == "" {
 			return
 		}
@@ -344,9 +345,9 @@ func addDirectoryToAncestors(values map[string]*aggregate, parent string) {
 	}
 }
 
-func ensureAggregate(values map[string]*aggregate, path string) *aggregate {
+func ensureDirectory(values map[string]*directoryRecord, path string) *directoryRecord {
 	if values[path] == nil {
-		values[path] = &aggregate{}
+		values[path] = &directoryRecord{}
 	}
 	return values[path]
 }

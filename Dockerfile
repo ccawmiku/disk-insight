@@ -11,7 +11,7 @@ COPY go.mod go.sum ./
 RUN go mod download && go mod verify
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
-ARG VERSION=v1.0.3
+ARG VERSION=v1.1.0
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/disk-insight ./cmd/disk-insight
 
 FROM alpine:3.23.5
@@ -26,7 +26,9 @@ COPY --from=web-build /src/web/dist /opt/disk-insight/web
 ENV DISK_INSIGHT_ADDRESS=:8080 \
     DISK_INSIGHT_DATABASE=/var/lib/disk-insight/disk-insight.db \
     DISK_INSIGHT_WEB=/opt/disk-insight/web \
-    DISK_INSIGHT_ROOTS=/data::Data
+    DISK_INSIGHT_ROOTS=/data::Data \
+    GOMEMLIMIT=600MiB \
+    GOGC=75
 USER 10001:10001
 EXPOSE 8080
 VOLUME ["/var/lib/disk-insight"]

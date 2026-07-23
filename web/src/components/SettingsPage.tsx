@@ -1,4 +1,4 @@
-import { Check, Palette, Save, TimerReset } from "lucide-react";
+import { Check, Palette, RotateCcw, Save, TimerReset } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { TranslationKey } from "../lib/i18n";
 import type { Settings, ThemeName } from "../types";
@@ -41,10 +41,47 @@ export function SettingsPage({
   onSave: (settings: Settings) => Promise<void>;
 }) {
   const [draft, setDraft] = useState(settings);
+  const [excludeText, setExcludeText] = useState(() =>
+    settings.exclude.join("\n"),
+  );
+  const [dirty, setDirty] = useState(false);
   const [saved, setSaved] = useState(false);
-  useEffect(() => setDraft(settings), [settings]);
+  useEffect(() => {
+    if (dirty) return;
+    setDraft(settings);
+    setExcludeText(settings.exclude.join("\n"));
+  }, [settings, dirty]);
+  useEffect(() => {
+    document.documentElement.dataset.theme = draft.theme;
+    return () => {
+      document.documentElement.dataset.theme = settings.theme;
+    };
+  }, [draft.theme, settings.theme]);
+  const updateDraft = (next: Partial<Settings>) => {
+    setDraft((current) => ({ ...current, ...next }));
+    setDirty(true);
+  };
+  const reset = () => {
+    setDraft(settings);
+    setExcludeText(settings.exclude.join("\n"));
+    setDirty(false);
+  };
   const save = async () => {
-    await onSave(draft);
+    const next = {
+      ...draft,
+      exclude: Array.from(
+        new Set(
+          excludeText
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean),
+        ),
+      ),
+    };
+    await onSave(next);
+    setDraft(next);
+    setExcludeText(next.exclude.join("\n"));
+    setDirty(false);
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1800);
   };
@@ -55,10 +92,17 @@ export function SettingsPage({
           <span className="eyebrow">Preferences</span>
           <h1>{t("settings")}</h1>
         </div>
-        <Button onClick={() => void save()}>
-          <Save size={16} />
-          {saved ? t("saved") : t("save")}
-        </Button>
+        <div className="settings-actions">
+          {dirty && <span className="unsaved-badge">{t("unsaved")}</span>}
+          <Button variant="ghost" onClick={reset} disabled={!dirty}>
+            <RotateCcw size={16} />
+            {t("discard")}
+          </Button>
+          <Button onClick={() => void save()} disabled={!dirty}>
+            <Save size={16} />
+            {saved ? t("saved") : t("save")}
+          </Button>
+        </div>
       </div>
       <Card>
         <CardHeader title={t("schedule")} action={<TimerReset size={20} />} />
@@ -68,8 +112,7 @@ export function SettingsPage({
             <select
               value={draft.scheduleKind}
               onChange={(event) =>
-                setDraft({
-                  ...draft,
+                updateDraft({
                   scheduleKind: event.target.value as Settings["scheduleKind"],
                 })
               }
@@ -85,7 +128,7 @@ export function SettingsPage({
               type="time"
               value={draft.scheduleTime}
               onChange={(event) =>
-                setDraft({ ...draft, scheduleTime: event.target.value })
+                updateDraft({ scheduleTime: event.target.value })
               }
             />
           </label>
@@ -95,8 +138,7 @@ export function SettingsPage({
               <select
                 value={draft.scheduleDay}
                 onChange={(event) =>
-                  setDraft({
-                    ...draft,
+                  updateDraft({
                     scheduleDay: Number(event.target.value),
                   })
                 }
@@ -114,7 +156,7 @@ export function SettingsPage({
             <input
               value={draft.timezone}
               onChange={(event) =>
-                setDraft({ ...draft, timezone: event.target.value })
+                updateDraft({ timezone: event.target.value })
               }
             />
           </label>
@@ -128,7 +170,7 @@ export function SettingsPage({
               type="button"
               key={theme.value}
               className={draft.theme === theme.value ? "selected" : ""}
-              onClick={() => setDraft({ ...draft, theme: theme.value })}
+              onClick={() => updateDraft({ theme: theme.value })}
             >
               <span className="theme-swatches">
                 {theme.colors.map((color) => (
@@ -146,8 +188,7 @@ export function SettingsPage({
             <select
               value={draft.language}
               onChange={(event) =>
-                setDraft({
-                  ...draft,
+                updateDraft({
                   language: event.target.value as Settings["language"],
                 })
               }
@@ -161,17 +202,13 @@ export function SettingsPage({
       <Card>
         <CardHeader title={t("exclusions")} description={t("exclusionsHint")} />
         <textarea
+          aria-label={t("exclusions")}
           rows={8}
-          value={draft.exclude.join("\n")}
-          onChange={(event) =>
-            setDraft({
-              ...draft,
-              exclude: event.target.value
-                .split("\n")
-                .map((line) => line.trim())
-                .filter(Boolean),
-            })
-          }
+          value={excludeText}
+          onChange={(event) => {
+            setExcludeText(event.target.value);
+            setDirty(true);
+          }}
         />
       </Card>
     </div>

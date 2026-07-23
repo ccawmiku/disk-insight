@@ -98,4 +98,11 @@ func TestServerReturnsNoScanBeforeInitialSnapshotCompletes(t *testing.T) {
 	if !strings.Contains(response.Body.String(), analytics.ErrNoScan.Error()) {
 		t.Fatalf("dashboard body = %s", response.Body.String())
 	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/scan-errors?rootId=1", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "[]" {
+		t.Fatalf("scan errors response = %d %q", response.Code, response.Body.String())
+	}
 }

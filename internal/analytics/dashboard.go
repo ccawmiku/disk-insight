@@ -61,9 +61,8 @@ func (s *DashboardService) Build(ctx context.Context, rootID int64, selectedPath
 	if sizeScale != "log" {
 		sizeScale = "linear"
 	}
-	if ageScale != "log" {
-		ageScale = "linear"
-	}
+	// Modification-time heatmap buckets are deliberately equal-width.
+	ageScale = "linear"
 	sort.Strings(categories)
 	var runID int64
 	if err := s.store.DB().QueryRowContext(ctx, "SELECT current_scan_id FROM roots WHERE id=? AND enabled=1 AND current_scan_id IS NOT NULL", rootID).Scan(&runID); err != nil {
@@ -80,6 +79,27 @@ func (s *DashboardService) Build(ctx context.Context, rootID int64, selectedPath
 	}
 	s.mu.RUnlock()
 
+	scope, scopeArgs := fileScope(rootID, runID, selectedPath, categories)
+	var maxSize int64
+	var oldestRaw sql.NullString
+	if err := s.store.DB().QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(size), 0), MIN(modified_at) FROM entries WHERE "+scope,
+		scopeArgs...).Scan(&maxSize, &oldestRaw); err != nil {
+		return model.Dashboard{}, err
+	}
+
+	now := time.Now().UTC()
+	var maximumAge int64 = 1
+	if oldestRaw.Valid {
+		oldest, parseErr := time.Parse(time.RFC3339Nano, oldestRaw.String)
+		if parseErr != nil {
+			return model.Dashboard{}, parseErr
+		}
+		if age := int64(now.Sub(oldest).Seconds()); age > maximumAge {
+			maximumAge = age
+		}
+	}
+
 	query, args := fileQuery(rootID, runID, selectedPath, categories)
 	rows, err := s.store.DB().QueryContext(ctx, query, args...)
 	if err != nil {
@@ -87,23 +107,27 @@ func (s *DashboardService) Build(ctx context.Context, rootID int64, selectedPath
 	}
 	defer rows.Close()
 
-	now := time.Now().UTC()
-	result := model.Dashboard{RootID: rootID, Path: selectedPath, GeneratedAt: now, TopFiles: make([]model.FileItem, 0, 100)}
+	result := model.Dashboard{
+		RootID:      rootID,
+		Path:        selectedPath,
+		GeneratedAt: now,
+		AxisMax:     NiceAxisMax(maxSize),
+		TopFiles:    make([]model.FileItem, 0, 100),
+	}
+	result.Size = emptySizePoints(result.AxisMax, sizeScale)
+	result.Age = emptyAgePoints(maximumAge)
 	categoryTotals := make(map[string]*model.CategoryStat)
 	childTotals := make(map[string]*model.ChildUsage)
-	directories := make(map[string]struct{})
-	physicalSeen := make(map[string]struct{})
-	var allocatedTotal int64
-	var hasAllocated bool
-	var samples []fileSample
+	var directories map[string]struct{}
+	if len(categories) > 0 {
+		directories = make(map[string]struct{})
+	}
 	top := &fileHeap{}
 	heap.Init(top)
-	var maxSize int64
 	for rows.Next() {
-		var name, filePath, category, modifiedRaw, identity string
+		var name, filePath, category, modifiedRaw string
 		var size int64
-		var allocated sql.NullInt64
-		if err := rows.Scan(&name, &filePath, &category, &size, &allocated, &modifiedRaw, &identity); err != nil {
+		if err := rows.Scan(&name, &filePath, &category, &size, &modifiedRaw); err != nil {
 			return model.Dashboard{}, err
 		}
 		modified, err := time.Parse(time.RFC3339Nano, modifiedRaw)
@@ -113,21 +137,19 @@ func (s *DashboardService) Build(ctx context.Context, rootID int64, selectedPath
 		age := int64(now.Sub(modified).Seconds())
 		result.Summary.FileCount++
 		result.Summary.LogicalSize += size
-		if size > maxSize {
-			maxSize = size
+		if size >= result.Summary.LargestFileSize {
 			result.Summary.LargestFileName = filePath
 			result.Summary.LargestFileSize = size
 		}
-		if allocated.Valid {
-			hasAllocated = true
-			if identity == "" {
-				allocatedTotal += allocated.Int64
-			} else if _, exists := physicalSeen[identity]; !exists {
-				physicalSeen[identity] = struct{}{}
-				allocatedTotal += allocated.Int64
-			}
+		sizeIndex := binIndex(size, len(result.Size), result.AxisMax, sizeScale)
+		result.Size[sizeIndex].Count++
+		result.Size[sizeIndex].Bytes += size
+		if age < 0 {
+			age = 0
 		}
-		samples = append(samples, fileSample{size: size, age: age})
+		ageIndex := binIndex(age, len(result.Age), maximumAge, "linear")
+		result.Age[ageIndex].Count++
+		result.Age[ageIndex].Bytes += size
 		stat := categoryTotals[category]
 		if stat == nil {
 			stat = &model.CategoryStat{Category: category}
@@ -135,7 +157,9 @@ func (s *DashboardService) Build(ctx context.Context, rootID int64, selectedPath
 		}
 		stat.Count++
 		stat.Bytes += size
-		addDirectoryPaths(directories, selectedPath, filePath)
+		if directories != nil {
+			addDirectoryPaths(directories, selectedPath, filePath)
+		}
 		addChildUsage(childTotals, selectedPath, filePath, size)
 		item := model.FileItem{Name: name, Path: filePath, Category: category, Size: size, ModifiedAt: modified}
 		if top.Len() < 100 {
@@ -148,13 +172,22 @@ func (s *DashboardService) Build(ctx context.Context, rootID int64, selectedPath
 	if err := rows.Err(); err != nil {
 		return model.Dashboard{}, err
 	}
-	if hasAllocated {
-		result.Summary.AllocatedSize = &allocatedTotal
+	if err := rows.Close(); err != nil {
+		return model.Dashboard{}, err
 	}
-	result.Summary.DirectoryCount = int64(len(directories))
-	result.AxisMax = NiceAxisMax(maxSize)
-	result.Size = buildSizePoints(samples, result.AxisMax, sizeScale, result.Summary.FileCount, result.Summary.LogicalSize)
-	result.Age = buildAgePoints(samples, ageScale)
+	allocatedSize, err := allocatedSizeForScope(ctx, s.store.DB(), scope, scopeArgs)
+	if err != nil {
+		return model.Dashboard{}, err
+	}
+	result.Summary.AllocatedSize = allocatedSize
+	if directories != nil {
+		result.Summary.DirectoryCount = int64(len(directories))
+	} else if err := s.store.DB().QueryRowContext(ctx,
+		"SELECT COALESCE(recursive_dirs, 0) FROM entries WHERE root_id=? AND run_id=? AND kind='directory' AND path=?",
+		rootID, runID, selectedPath).Scan(&result.Summary.DirectoryCount); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return model.Dashboard{}, err
+	}
+	finalizeSizePoints(result.Size, result.Summary.FileCount, result.Summary.LogicalSize)
 	for _, stat := range categoryTotals {
 		result.Categories = append(result.Categories, *stat)
 	}
@@ -244,7 +277,7 @@ func (s *DashboardService) addHistory(ctx context.Context, result *model.Dashboa
 func (s *DashboardService) putCache(key string, value model.Dashboard) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.order) >= 128 {
+	if len(s.order) >= 32 {
 		delete(s.cache, s.order[0])
 		s.order = s.order[1:]
 	}
@@ -252,20 +285,56 @@ func (s *DashboardService) putCache(key string, value model.Dashboard) {
 	s.order = append(s.order, key)
 }
 
-func fileQuery(rootID, runID int64, selectedPath string, categories []string) (string, []any) {
-	query := `SELECT name, path, category, size, allocated_size, modified_at, identity FROM entries WHERE root_id=? AND run_id=? AND kind='file'`
+func fileScope(rootID, runID int64, selectedPath string, categories []string) (string, []any) {
+	scope := `root_id=? AND run_id=? AND kind='file'`
 	args := []any{rootID, runID}
 	if selectedPath != "" {
-		query += " AND path LIKE ? ESCAPE '\\'"
+		scope += " AND path LIKE ? ESCAPE '\\'"
 		args = append(args, escapeLike(selectedPath)+"/%")
 	}
 	if len(categories) > 0 {
-		query += " AND category IN (" + strings.TrimSuffix(strings.Repeat("?,", len(categories)), ",") + ")"
+		scope += " AND category IN (" + strings.TrimSuffix(strings.Repeat("?,", len(categories)), ",") + ")"
 		for _, category := range categories {
 			args = append(args, category)
 		}
 	}
-	return query, args
+	return scope, args
+}
+
+func fileQuery(rootID, runID int64, selectedPath string, categories []string) (string, []any) {
+	scope, args := fileScope(rootID, runID, selectedPath, categories)
+	return `SELECT name, path, category, size, modified_at FROM entries WHERE ` + scope, args
+}
+
+func allocatedSizeForScope(ctx context.Context, db *sql.DB, scope string, args []any) (*int64, error) {
+	var total, rowsFound int64
+	if err := db.QueryRowContext(ctx,
+		"SELECT COALESCE(SUM(allocated_size), 0), COUNT(*) FROM entries WHERE "+scope+" AND allocated_size IS NOT NULL AND identity=''",
+		args...).Scan(&total, &rowsFound); err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx,
+		"SELECT MAX(allocated_size) FROM entries WHERE "+scope+" AND allocated_size IS NOT NULL AND identity<>'' GROUP BY identity",
+		args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var value int64
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		total += value
+		rowsFound++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if rowsFound == 0 {
+		return nil, nil
+	}
+	return &total, nil
 }
 
 func escapeLike(value string) string {
@@ -327,16 +396,26 @@ func addChildUsage(values map[string]*model.ChildUsage, selectedPath, filePath s
 }
 
 func buildSizePoints(samples []fileSample, axisMax int64, scale string, totalCount, totalBytes int64) []model.SizePoint {
+	result := emptySizePoints(axisMax, scale)
+	for _, sample := range samples {
+		index := binIndex(sample.size, len(result), axisMax, scale)
+		result[index].Count++
+		result[index].Bytes += sample.size
+	}
+	finalizeSizePoints(result, totalCount, totalBytes)
+	return result
+}
+
+func emptySizePoints(axisMax int64, scale string) []model.SizePoint {
 	const bins = 80
 	result := make([]model.SizePoint, bins)
 	for index := range result {
 		result[index].Upper = binUpper(index, bins, axisMax, scale)
 	}
-	for _, sample := range samples {
-		index := binIndex(sample.size, bins, axisMax, scale)
-		result[index].Count++
-		result[index].Bytes += sample.size
-	}
+	return result
+}
+
+func finalizeSizePoints(result []model.SizePoint, totalCount, totalBytes int64) {
 	var count, bytes int64
 	for index := range result {
 		count += result[index].Count
@@ -348,32 +427,33 @@ func buildSizePoints(samples []fileSample, axisMax int64, scale string, totalCou
 			result[index].CumulativeBytes = float64(bytes) / float64(totalBytes) * 100
 		}
 	}
-	return result
 }
 
 func buildAgePoints(samples []fileSample, scale string) []model.AgePoint {
-	const bins = 60
 	var maximum int64 = 1
-	var future int64
 	for _, sample := range samples {
-		if sample.age < 0 {
-			future++
-		} else if sample.age > maximum {
+		if sample.age > maximum {
 			maximum = sample.age
 		}
 	}
-	result := make([]model.AgePoint, bins, bins+1)
-	for index := range result {
-		result[index].UpperSeconds = binUpper(index, bins, maximum, scale)
-	}
+	result := emptyAgePoints(maximum)
 	for _, sample := range samples {
-		if sample.age < 0 {
-			continue
+		age := sample.age
+		if age < 0 {
+			age = 0
 		}
-		result[binIndex(sample.age, bins, maximum, scale)].Count++
+		index := binIndex(age, len(result), maximum, "linear")
+		result[index].Count++
+		result[index].Bytes += sample.size
 	}
-	if future > 0 {
-		result = append([]model.AgePoint{{UpperSeconds: -1, Count: future}}, result...)
+	return result
+}
+
+func emptyAgePoints(maximum int64) []model.AgePoint {
+	const bins = 60
+	result := make([]model.AgePoint, bins)
+	for index := range result {
+		result[index].UpperSeconds = binUpper(index, bins, maximum, "linear")
 	}
 	return result
 }
@@ -403,7 +483,12 @@ func binUpper(index, bins int, maximum int64, scale string) int64 {
 	if scale == "log" {
 		return int64(math.Expm1(fraction * math.Log1p(float64(maximum))))
 	}
-	return int64(math.Ceil(fraction * float64(maximum)))
+	// Keep linear buckets exactly and monotonically distributed without
+	// floating-point rounding turning equal spans into alternating 9/11 widths.
+	position := int64(index + 1)
+	divisor := int64(bins)
+	quotient, remainder := maximum/divisor, maximum%divisor
+	return quotient*position + (remainder*position+divisor-1)/divisor
 }
 
 type fileHeap []model.FileItem

@@ -45,3 +45,32 @@ func TestBinsIncludeMaximum(t *testing.T) {
 		}
 	}
 }
+
+func TestModificationHeatmapUsesEqualIntervalsAndTracksBytes(t *testing.T) {
+	samples := []fileSample{
+		{size: 100, age: 0},
+		{size: 200, age: 600},
+	}
+	points := buildAgePoints(samples, "log")
+	if len(points) != 60 {
+		t.Fatalf("heatmap bins = %d, want 60", len(points))
+	}
+	var count, bytes int64
+	for index, point := range points {
+		count += point.Count
+		bytes += point.Bytes
+		if index > 0 {
+			previousWidth := points[index-1].UpperSeconds
+			if index > 1 {
+				previousWidth -= points[index-2].UpperSeconds
+			}
+			width := point.UpperSeconds - points[index-1].UpperSeconds
+			if width < previousWidth-1 || width > previousWidth+1 {
+				t.Fatalf("bucket %d width = %d, previous = %d", index, width, previousWidth)
+			}
+		}
+	}
+	if count != 2 || bytes != 300 {
+		t.Fatalf("heatmap totals = %d files, %d bytes", count, bytes)
+	}
+}

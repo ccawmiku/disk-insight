@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { categoryColors } from "../lib/categories";
 import { formatBytes, formatNumber } from "../lib/format";
 import type { TranslationKey } from "../lib/i18n";
@@ -7,7 +7,7 @@ import { Card, CardHeader, Segmented } from "./ui";
 
 type Metric = "count" | "bytes";
 
-export function WaffleChart({
+export const WaffleChart = memo(function WaffleChart({
   data,
   selected,
   onToggle,
@@ -84,7 +84,7 @@ export function WaffleChart({
       </div>
     </Card>
   );
-}
+});
 
 export function allocateCells(
   data: CategoryStat[],

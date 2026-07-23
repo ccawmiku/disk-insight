@@ -55,7 +55,6 @@ export default function App() {
     () => initial.get("categories")?.split(",").filter(Boolean) ?? [],
   );
   const [sizeScale, setSizeScale] = useState<Scale>("linear");
-  const [ageScale, setAgeScale] = useState<Scale>("linear");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [catalog, setCatalog] = useState<CategoryStat[]>([]);
   const [loading, setLoading] = useState(true);
@@ -67,7 +66,7 @@ export default function App() {
   const activeRoot = roots.find((root) => root.id === rootId);
   const activeProgress = progress.find((item) => item.rootId === rootId);
 
-  const loadShell = useCallback(async () => {
+  const loadInitial = useCallback(async () => {
     try {
       const [nextRoots, nextSettings, nextProgress] = await Promise.all([
         api.roots(),
@@ -88,15 +87,40 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    void loadShell();
-    const timer = window.setInterval(() => void loadShell(), 3000);
+    void loadInitial();
+  }, [loadInitial]);
+
+  const refreshProgress = useCallback(async () => {
+    try {
+      const next = await api.progress();
+      setProgress((current) =>
+        JSON.stringify(current) === JSON.stringify(next) ? current : next,
+      );
+    } catch (loadError) {
+      setError(loadError as Error);
+    }
+  }, []);
+
+  const refreshRoots = useCallback(async () => {
+    try {
+      const next = await api.roots();
+      setRoots((current) =>
+        JSON.stringify(current) === JSON.stringify(next) ? current : next,
+      );
+    } catch (loadError) {
+      setError(loadError as Error);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => void refreshProgress(), 3000);
     return () => window.clearInterval(timer);
-  }, [loadShell]);
+  }, [refreshProgress]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = settings.theme;
     document.documentElement.lang = settings.language;
-  }, [settings]);
+  }, [settings.theme, settings.language]);
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -125,7 +149,7 @@ export default function App() {
         path,
         categories,
         sizeScale,
-        ageScale,
+        "linear",
       );
       setDashboard(next);
       if (categories.length === 0) setCatalog(next.categories);
@@ -136,7 +160,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [rootId, path, categories, sizeScale, ageScale, page, revision]);
+  }, [rootId, path, categories, sizeScale, page, revision]);
 
   useEffect(() => {
     void loadDashboard();
@@ -144,8 +168,11 @@ export default function App() {
   const completedRunId =
     activeProgress?.stage === "completed" ? activeProgress.runId : undefined;
   useEffect(() => {
-    if (completedRunId) setRevision((value) => value + 1);
-  }, [completedRunId]);
+    if (completedRunId) {
+      setRevision((value) => value + 1);
+      void refreshRoots();
+    }
+  }, [completedRunId, refreshRoots]);
 
   const changeRoot = (id: number) => {
     setRootId(id);
@@ -153,15 +180,18 @@ export default function App() {
     setCategories([]);
     setCatalog([]);
   };
-  const toggleCategory = (category: string) =>
-    setCategories((current) =>
-      current.includes(category)
-        ? current.filter((item) => item !== category)
-        : [...current, category],
-    );
+  const toggleCategory = useCallback(
+    (category: string) =>
+      setCategories((current) =>
+        current.includes(category)
+          ? current.filter((item) => item !== category)
+          : [...current, category],
+      ),
+    [],
+  );
   const startScan = async (ids = rootId ? [rootId] : []) => {
     await api.startScan(ids);
-    await loadShell();
+    await refreshProgress();
     setPage("scans");
   };
   const saveSettings = async (next: Settings) => {
@@ -213,7 +243,7 @@ export default function App() {
               progress={progress}
               selectedRootId={rootId}
               t={t}
-              onCancel={(id) => void api.cancelScan(id).then(loadShell)}
+              onCancel={(id) => void api.cancelScan(id).then(refreshProgress)}
               onScan={(id) => void startScan([id])}
             />
           ) : error ? (
@@ -266,12 +296,7 @@ export default function App() {
                       onToggle={toggleCategory}
                       t={t}
                     />
-                    <AgeChart
-                      data={dashboard.ageDistribution}
-                      scale={ageScale}
-                      onScaleChange={setAgeScale}
-                      t={t}
-                    />
+                    <AgeChart data={dashboard.ageDistribution} t={t} />
                   </div>
                   <DirectoryCharts
                     data={dashboard.children}
@@ -288,12 +313,7 @@ export default function App() {
                       <h1>{t("time")}</h1>
                     </div>
                   </div>
-                  <AgeChart
-                    data={dashboard.ageDistribution}
-                    scale={ageScale}
-                    onScaleChange={setAgeScale}
-                    t={t}
-                  />
+                  <AgeChart data={dashboard.ageDistribution} t={t} />
                   <HistoryChart data={dashboard.history} t={t} />
                 </div>
               )}
